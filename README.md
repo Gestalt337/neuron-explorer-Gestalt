@@ -56,6 +56,7 @@ and {free} × {+3}, plus one unsteered baseline per prompt.
 | `explorer/build_embeddings.py` | `runs/<run>.umap.json` |
 | `explorer/build_layout.py` | `explorer/cache/layout_writes.npz` |
 | `explorer/build_connections.py` | `explorer/cache/connections.npz`: each neuron's 24 strongest direct-path links up and down |
+| `sweep/chat_vector.py` | a continued-pretraining checkpoint plus the chat vector (chat − base), in the official Qwen3.5 layout; `chat_vector.json`: per-tensor sizes of the CPT delta and the chat vector, and their cosine |
 | `sweep/capture_prefill.py` | `captures/<run>.mlp_in.npy`: MLP input at the last prompt token at the run's capture layers, steered |
 
 `research_log.md` holds the findings and reasoning; `NOTES.md` the source notes.
