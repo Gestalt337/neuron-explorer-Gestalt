@@ -56,7 +56,24 @@ and {free} × {+3}, plus one unsteered baseline per prompt.
 | `explorer/build_embeddings.py` | `runs/<run>.umap.json` |
 | `explorer/build_layout.py` | `explorer/cache/layout_writes.npz` |
 | `explorer/build_connections.py` | `explorer/cache/connections.npz`: each neuron's 24 strongest direct-path links up and down |
-| `sweep/chat_vector.py` | a continued-pretraining checkpoint plus the chat vector (chat − base), in the official Qwen3.5 layout; `chat_vector.json`: per-tensor sizes of the CPT delta and the chat vector, and their cosine |
 | `sweep/capture_prefill.py` | `captures/<run>.mlp_in.npy`: MLP input at the last prompt token at the run's capture layers, steered |
+| `sweep/chat_vector.py` | a continued-pretraining checkpoint plus the chat vector (chat − base), in the official Qwen3.5 layout; `chat_vector.json`: per-tensor sizes of the CPT delta and the chat vector, and their cosine |
+
+## Chat vector
+
+A continued-pretraining (CPT) checkpoint of a Qwen3.5 base model gets chat behaviour back from the chat vector, the
+difference between the official chat and base weights:
+
+    uv run python sweep/chat_vector.py --cpt /path/to/cpt-checkpoint --base Qwen/Qwen3.5-9B-Base \
+        --chat Qwen/Qwen3.5-9B --out models/q35-9b-cpt-cv          # out = cpt + scale * (chat - base)
+
+The arithmetic is float32 on CPU, in blocks; it needs RAM for one output shard plus the largest tensor (about 8 GB at
+9B with the default 5 GB shards) and disk for base, chat, cpt and output (about 19 GB each at 9B). The CPT checkpoint
+can be text-only (`Qwen3_5ForCausalLM`, `model.layers.*`) or in the official layout. The output is in the official
+`Qwen3_5ForConditionalGeneration` layout, with the vision tower, the mtp head, config, tokenizer and chat template
+taken from chat (its tokenizer's eos is `<|im_end|>`; the base tokenizer's is `<|endoftext|>`). `--scale` multiplies
+the vector (1.0 by default); `--keep embed_tokens,lm_head` leaves tensors at their CPT values. The sweep's Python
+scripts load the output with `--model models/q35-9b-cpt-cv`; the explorer and its cache builders still assume
+Qwen3.5-4B.
 
 `research_log.md` holds the findings and reasoning; `NOTES.md` the source notes.

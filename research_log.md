@@ -280,3 +280,49 @@ Per-layer Spearman ρ between the two scores is 0.84–0.95. The hypothesis is d
 **Captures lost and rebuilt.** The sweep's fork captures (MLP input at layers L, L+1, L+4, L+8 at the last prompt token) were never pulled from the pods before deletion. A capture depends only on (direction, dose, prompt), because the push applies at every prompt position, so it can be rebuilt by prefill. `sweep/capture_prefill.py` does that, about 800 rollouts/s on a 4090. Against the fork's own surviving end-to-end captures (294 rollouts, 4 layers) the median relative error is 1.1–1.5% and the max 2%. That is the same bf16 band as the original HF-vs-fork equivalence check. All 32 runs are rebuilt (6.2 GB, `captures/<run>.mlp_in.npy`, rows aligned to jsonl lines). Lesson for the pipeline: pulling a sweep means runs, stats *and* captures, checked by listing every output directory the run's meta names.
 
 **Embeddings** UMAPs now exist for all 30 subset layers. Each took about 50 s of CPU-bound UMAP on the pod.
+
+## 2026-10-27 — chat vector for a continued-pretraining Qwen3.5-9B
+
+**Why:** the next model to explore is a continued-pretraining (CPT) checkpoint of Qwen3.5-9B-Base. CPT on raw text
+leaves it a base model, so it gets chat behaviour back from the chat vector: out = cpt + scale × (chat − base), with
+chat = Qwen/Qwen3.5-9B. `sweep/chat_vector.py` does the merge. Fine-tuning keeps neuron indices, so base, CPT, chat
+and the merged model are four aligned versions of the same neurons.
+
+**Layouts, read before writing anything** (the official checkpoints from their safetensors headers by range request):
+
+| | CPT checkpoint | Qwen3.5-9B-Base and Qwen3.5-9B |
+|---|---|---|
+| class | `Qwen3_5ForCausalLM`, text-only | `Qwen3_5ForConditionalGeneration` |
+| names | `model.layers.*`, `model.embed_tokens`, `model.norm`, `lm_head` | language model under `model.language_model.*` |
+| tensors | 427 | 775 = the same 427 + 333 vision tower + 15 mtp head |
+| dtype | bf16 | bf16, except `linear_attn.A_log` and `linear_attn.norm.weight` (48 tensors) in F32 |
+| tokenizer | the base's | base and chat differ only in eos: `<\|endoftext\|>` (248044) vs `<\|im_end\|>` (248046) |
+
+Base and chat have identical names, shapes and dtypes. Both configs keep `eos_token_id` 248044, the vocabulary is
+248320 in all three, embeddings are untied in all three, and the chat template is the same file. One version trap:
+transformers 5.18.0 saved the CPT checkpoint's text-only model as `model.layers.*`, while 5.20.1 saves the same class
+under the official `model.language_model.*` names, so the script accepts both.
+
+**Choices:**
+- Float32 arithmetic, cast per tensor to chat's dtype. bf16 keeps 8 significant bits, and chat − base is small next to
+  the weights, so adding in bf16 would round much of the vector away.
+- Embeddings and `lm_head` get the vector too: the vocabulary is unchanged, so rows line up, and chat's trained rows for
+  `<|im_start|>`, `<|im_end|>` and `<think>` come with it. `--keep embed_tokens,lm_head` turns that off for comparison.
+- The vision tower and mtp head are copied from chat, which is cpt + (chat − base) for weights CPT never trained. The mtp
+  head matches chat's trunk rather than the merged one; only speculative decoding uses it, and nothing here does.
+- Config, tokenizer and chat template come from chat. vLLM stops on the tokenizer's eos, so with the base tokenizer
+  sweep rollouts would run on past `<|im_end|>`; the explorer runtime stops on `<|im_end|>` explicitly.
+- Per tensor, `chat_vector.json` keeps |cpt − base| and |chat − base| relative to |base| and their cosine, printed as
+  per-layer medians: a first look at whether the vector undoes CPT anywhere (negative cosine).
+
+**Checked** on tiny synthetic checkpoints laid out like the real ones (official base and chat, F32 A_log and gated norm,
+an mtp head, sharded with an index; text-only CPT saved by `Qwen3_5ForCausalLM`), all bit-identical to the expected
+tensors: cpt = base at scale 1 gives chat exactly; scale 0 gives the CPT weights with chat's vision tower and mtp head;
+a trained CPT at scale 0.7 with embeddings kept, forced into many blocks and shards, matches a whole-tensor reference;
+the output loads as `Qwen3_5ForConditionalGeneration` and as a causal LM and runs; a shape mismatch stops the script
+before it writes anything.
+
+**Untested:** the merge on the real 9B weights; which scale keeps the CPT gains (the run's own eval sets) while chat
+still works (instruction following, stopping, the thinking switch); the cosine profile across layers. The explorer and
+its cache builders still assume Qwen3.5-4B (architecture read from the 4B config, 96×96 sheets, one cache folder), so
+exploring the merged 9B needs per-model data folders first.
